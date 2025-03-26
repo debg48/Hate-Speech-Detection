@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from typing import List
 import uuid
 import logging
+import requests
 from tempfile import NamedTemporaryFile
 
 # Configure logging
@@ -35,55 +36,69 @@ class TextRequest(BaseModel):
 class GCSRequest(BaseModel):
     gcs_uri: str  # Format: "gs://bucket-name/path/to/file.csv"
 
-@app.post("/update-embeddings-from-gcs", summary="Update embeddings from GCS CSV")
-async def update_embeddings_from_gcs(request: GCSRequest):
-    """Process CSV from GCS and update Pinecone embeddings"""
+@app.post("/update-embeddings", summary="Update embeddings from public GCS CSV")
+async def update_embeddings():
+    """Process public CSV from GCS and update Pinecone embeddings"""
     temp_file = None
     try:
-        # Validate GCS URI format
-        if not request.gcs_uri.startswith("gs://"):
-            raise HTTPException(status_code=400, detail="Invalid GCS URI format. Must start with gs://")
+        # Fixed GCS URI for public file
+        GCS_URI = "https://storage.googleapis.com/hate-speech-data-1743017900/filtered100.csv"
+        logger.info(f"Processing CSV from GCS: {GCS_URI}")
         
-        logger.info(f"Processing CSV from GCS: {request.gcs_uri}")
-        
-        # Download CSV from GCS to temp file
-        temp_file = download_csv_from_gcs(request.gcs_uri)
-        
-        # Process CSV
+        # Download CSV from public GCS URL
         try:
+            response = requests.get(GCS_URI)
+            response.raise_for_status()
+            
+            # Create temp file
+            temp_file = NamedTemporaryFile(suffix=".csv", delete=False)
+            temp_file.write(response.content)
+            temp_file.close()  # Close to allow reading
+            
+            # Process CSV
             df = pd.read_csv(temp_file.name)
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(status_code=400, detail=f"Failed to download CSV: {str(e)}")
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"CSV parsing error: {str(e)}")
         
+        # Check for required columns (case-insensitive)
+        df.columns = df.columns.str.strip().str.lower()
         if 'content' not in df.columns:
-            raise HTTPException(status_code=400, detail="CSV must contain 'content' column")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"CSV must contain 'Content' column. Found columns: {list(df.columns)}"
+            )
         
         # Generate embeddings in batches
-        texts = df['content'].tolist()
+        texts = df['content'].astype(str).tolist()
         logger.info(f"Generating embeddings for {len(texts)} texts")
         
         embeddings = generate_embedding_batch(texts)
         
         # Prepare vectors for Pinecone
+        batch_id = str(uuid.uuid4())
         vectors = [{
-            "id": str(uuid.uuid4()),
+            "id": f"vec_{batch_id}_{idx}",
             "values": embedding,
             "metadata": {
                 "text": text,
-                "source": request.gcs_uri,
-                "batch_id": str(uuid.uuid4())  # For tracking
+                "source": GCS_URI,
+                "batch_id": batch_id,
+                "index": idx  # Adding index for reference
             }
-        } for text, embedding in zip(texts, embeddings)]
+        } for idx, (text, embedding) in enumerate(zip(texts, embeddings))]
         
         # Upsert to Pinecone
         response = upsert_embeddings(vectors)
-        logger.info(f"Upserted {response.upserted_count} vectors")
+        logger.info(f"Upserted {response.upserted_count} vectors from batch {batch_id}")
         
         return {
             "status": "success",
             "upserted_count": response.upserted_count,
             "total_processed": len(vectors),
-            "batch_id": vectors[0]["metadata"]["batch_id"] if vectors else None
+            "batch_id": batch_id,
+            "sample_text": texts[0] if texts else None
         }
         
     except HTTPException:
@@ -92,12 +107,11 @@ async def update_embeddings_from_gcs(request: GCSRequest):
         logger.error(f"Unexpected error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        if temp_file:
-            temp_file.close()
+        if temp_file and os.path.exists(temp_file.name):
             try:
                 os.unlink(temp_file.name)
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to delete temp file: {str(e)}")
 
 @app.post("/detect-hate-speech", summary="Detect hate speech in text")
 async def detect_hate_speech(request: TextRequest):
