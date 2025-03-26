@@ -18,52 +18,51 @@ if not INDEX_HOST:
 # Connect to the index
 index = pc.Index(host=INDEX_HOST)
 
-def query_pinecone(query_text: str, top_k: int = 5) -> Union[Dict, None]:
-    """Query Pinecone for similar records"""
-    if not query_text:
-        raise ValueError("Query text cannot be empty.")
-
+def query_pinecone(embedding, top_k=5):
+    """Query Pinecone with a precomputed embedding."""
     try:
-        response = index.search_records(
-            namespace="default-namespace",
-            query={"inputs": {"text": query_text}, "top_k": top_k},
-            fields=["category", "chunk_text"]
-        )
-        return response
-    except Exception as e:
-        print(f"Error querying Pinecone: {e}")
-        return None
-
-def upsert_embeddings(embeddings: List[Dict[str, Union[str, List[float], Dict]]]) -> Union[Dict, None]:
-    """Insert text records into Pinecone"""
-    if not embeddings:
-        raise ValueError("Embeddings list cannot be empty.")
-
-    formatted_records = []
-    for entry in embeddings:
-        # Ensure expected keys exist
-        if "id" not in entry or "vector" not in entry:
-            print(f"Skipping invalid entry (missing 'id' or 'vector'): {entry}")
-            continue
+        # Ensure Pinecone index is initialized
+        index = pc.Index(host=os.getenv("PINECONE_INDEX_NAME"))
         
-        formatted_records.append({
-            "id": entry["id"],  # Make sure this exists in the input
-            "values": entry["vector"],  # Pinecone expects "values"
-            "metadata": entry.get("metadata", {})  # Optional metadata
-        })
+        response = index.query(
+            namespace="hate-speech-namespace",
+            vector=embedding,  # Ensure you are sending an embedding, not raw text!
+            top_k=top_k,
+            include_metadata=True
+        )
 
-    if not formatted_records:
-        print("Warning: No valid records to upsert.")
+        return response
+
+    except Exception as e:
+        logger.error(f"Error querying Pinecone: {str(e)}", exc_info=True)
+        return None  
+
+def upsert_embeddings(vectors):
+    """Upserts sparse vectors into Pinecone."""
+    if not vectors:
+        print("Warning: No vectors provided for upsert.")
+        return None
+
+    formatted_vectors = []
+    for entry in vectors:
+        if "id" not in entry or "sparse_values" not in entry:
+            print(f"Skipping invalid entry (missing 'id' or 'sparse_values'): {entry}")
+            continue
+
+        formatted_vectors.append(entry)
+
+    if not formatted_vectors:
+        print("Warning: No valid vectors to upsert.")
         return None
 
     try:
-        print(f"Upserting {len(formatted_records)} records...")
-        response = index.upsert_records(
-            namespace="default-namespace",
-            records=formatted_records
+        print(f"Upserting {len(formatted_vectors)} vectors...")
+        response = index.upsert(
+            namespace="example-namespace",
+            vectors=formatted_vectors
         )
         print(f"Upsert Response: {response}")
         return response
     except Exception as e:
-        print(f"Error upserting records: {e}")
+        print(f"Error upserting vectors: {e}")
         return None
