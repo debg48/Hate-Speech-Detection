@@ -1,8 +1,10 @@
 import os
 import requests
 from dotenv import load_dotenv
+from fastapi import HTTPException  # Add this import if you're calling this in FastAPI
 
 load_dotenv()
+
 
 HF_API_TOKEN = os.getenv("HF_API_TOKEN")
 API_URL = "https://api-inference.huggingface.co/models/unitary/toxic-bert"
@@ -26,7 +28,14 @@ def detect_hate_speech(text: str) -> str:
             timeout=10
         )
         response.raise_for_status()
-        predictions = response.json()[0]
+
+        result = response.json()
+
+        # If Hugging Face returns an error inside a 200
+        if isinstance(result, dict) and result.get("error"):
+            raise HTTPException(status_code=502, detail=f"HuggingFace Error: {result['error']}")
+
+        predictions = result[0]
 
         triggered_labels = [
             f"{pred['label']} ({pred['score']:.2f})"
@@ -38,5 +47,7 @@ def detect_hate_speech(text: str) -> str:
             return f"⚠️ Detected: {', '.join(triggered_labels)}"
         return "✅ No hate speech detected."
 
+    except requests.exceptions.HTTPError as http_err:
+        raise HTTPException(status_code=response.status_code, detail=f"HTTP Error: {http_err}")
     except Exception as e:
-        return f"❌ Error during detection: {str(e)}"
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")

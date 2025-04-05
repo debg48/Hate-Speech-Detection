@@ -17,4 +17,5 @@ async def misinformation_api(input: TextInput):
 @app.post("/detect-hate-speech")
 async def hate_speech_api(input: TextInput):
     result = detect_hate_speech(input.text)
+    print("hi")
     return {"result": result}
