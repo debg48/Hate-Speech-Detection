@@ -1,10 +1,9 @@
 import os
 import requests
 from dotenv import load_dotenv
-from fastapi import HTTPException  # Add this import if you're calling this in FastAPI
+from fastapi import HTTPException
 
 load_dotenv()
-
 
 HF_API_TOKEN = os.getenv("HF_API_TOKEN")
 API_URL = "https://api-inference.huggingface.co/models/unitary/toxic-bert"
@@ -19,7 +18,7 @@ LABEL_THRESHOLDS = {
     "severe_toxic": 0.3
 }
 
-def detect_hate_speech(text: str) -> str:
+def detect_hate_speech(text: str) -> dict:
     try:
         response = requests.post(
             API_URL,
@@ -31,21 +30,23 @@ def detect_hate_speech(text: str) -> str:
 
         result = response.json()
 
-        # If Hugging Face returns an error inside a 200
+        # If Hugging Face returns an error inside a 200 response
         if isinstance(result, dict) and result.get("error"):
             raise HTTPException(status_code=502, detail=f"HuggingFace Error: {result['error']}")
 
         predictions = result[0]
 
         triggered_labels = [
-            f"{pred['label']} ({pred['score']:.2f})"
+            {"label": pred["label"], "score": round(pred["score"], 2)}
             for pred in predictions
-            if pred['score'] > LABEL_THRESHOLDS.get(pred['label'], 0.5)
+            if pred["score"] > LABEL_THRESHOLDS.get(pred["label"], 0.5)
         ]
 
-        if triggered_labels:
-            return f"⚠️ Detected: {', '.join(triggered_labels)}"
-        return "✅ No hate speech detected."
+        return {
+            "hate_speech": bool(triggered_labels),
+            "detected_labels": triggered_labels,
+            "message": "⚠️ Detected hate speech." if triggered_labels else "✅ No hate speech detected."
+        }
 
     except requests.exceptions.HTTPError as http_err:
         raise HTTPException(status_code=response.status_code, detail=f"HTTP Error: {http_err}")
